@@ -1,0 +1,226 @@
+---
+title: "What Drives MLB Hitting Production?"
+subtitle: "Bat tracking, swing profiles and development levers – public Statcast data"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    fig-dpi: 200
+    page-layout: article
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(ggrepel)
+library(scales)
+library(knitr)
+
+res     <- readRDS(here("outputs", "analysis.rds"))
+d_ref   <- res$d_ref
+d_q     <- filter(d_ref, qualifie)
+evol    <- res$evol
+saison  <- max(d_ref$season)
+
+nom_court <- function(x) sub("^(.*), (.*)$", "\\2 \\1", x)
+
+profils_en <- c("Contact"         = "Contact hitter",
+                "Sous-puissance"  = "Under-powered",
+                "Équilibré"       = "Balanced",
+                "Puissance brute" = "Raw power")
+couleurs_profils <- c("Contact"         = "#2E86AB",
+                      "Sous-puissance"  = "#A23B72",
+                      "Équilibré"       = "#3BB273",
+                      "Puissance brute" = "#F18F01")
+JAYS <- "#134A8E"
+
+# Models -----------------------------------------------------------------
+adj_swing <- summary(res$mod)$adj.r.squared
+adj_dec   <- summary(res$mod_dec)$adj.r.squared
+
+m_raw <- lm(est_woba ~ avg_bat_speed + swing_length +
+              squared_up_per_swing + whiff_per_swing, data = d_q)
+pts_mph <- round(1000 * coef(m_raw)[["avg_bat_speed"]])
+
+coefs <- as_tibble(coef(summary(res$mod_dec)), rownames = "terme") |>
+  filter(terme != "(Intercept)") |>
+  transmute(var = gsub("scale\\(|\\)", "", terme),
+            beta = Estimate,
+            low  = Estimate - 1.96 * `Std. Error`,
+            high = Estimate + 1.96 * `Std. Error`)
+labels_var <- c(avg_bat_speed        = "Bat speed",
+                swing_length         = "Swing length",
+                squared_up_per_swing = "Squared-up rate",
+                whiff_per_swing      = "Whiff rate",
+                oz_swing_percent     = "Chase rate",
+                z_swing_percent      = "In-zone swing rate")
+beta <- setNames(coefs$beta, coefs$var)
+
+# Is swing length significant in the swing-only model?
+p_len <- coef(summary(res$mod))["scale(swing_length)", "Pr(>|t|)"]
+
+# Year-over-year ---------------------------------------------------------
+ct      <- cor.test(evol$d_bat_speed, evol$d_xwoba)
+pente   <- round(1000 * coef(lm(d_xwoba ~ d_bat_speed, data = evol))[["d_bat_speed"]])
+```
+
+```{r constats, results='asis'}
+evol_txt <- if (ct$p.value < 0.05 && ct$estimate > 0) {
+  glue::glue("**Gaining bat speed pays off.** Among {nrow(evol)} hitters ",
+             "qualified in both seasons, a change in bat speed from {saison - 1} to ",
+             "{saison} went with a change in xwOBA in the same direction ",
+             "(r = {sprintf('%.2f', ct$estimate)}, about {pente} points per mph).")
+} else {
+  glue::glue("**Year-to-year changes are noisy.** Among {nrow(evol)} hitters ",
+             "qualified in both seasons, changes in bat speed and in xwOBA were only ",
+             "weakly linked (r = {sprintf('%.2f', ct$estimate)}): one season is a ",
+             "short window to judge a development change.")
+}
+
+cat(glue::glue(
+  "::: {{.callout-note appearance=\"simple\"}}\n",
+  "## Key findings\n\n",
+  "1. **Bat speed is the strongest driver of production.** At equal swing length ",
+  "and contact, +1 mph of bat speed is associated with about +{pts_mph} points ",
+  "of xwOBA across {nrow(d_q)} qualified hitters.\n",
+  "2. **Efficiency matters.** At equal bat speed, a longer swing tends to go with ",
+  "lower production{if (p_len < 0.05) ' (significant in the swing-only model)' else ''}: ",
+  "speed has to come from the body, not from a longer path.\n",
+  "3. **There is no single ideal swing.** Four distinct hitter profiles reach ",
+  "similar production through different routes, so development has to be ",
+  "individual.\n",
+  "4. {evol_txt}\n",
+  "5. **Public data explains about half of the picture.** Swing metrics explain ",
+  "{percent(adj_swing, 1)} of the differences in xwOBA between hitters, ",
+  "{percent(adj_dec, 1)} with swing decisions added (adjusted R²), chasing ",
+  "fewer pitches out of the zone being the decision that matters most. ",
+  "The rest is where biomechanics data adds the most value.\n",
+  ":::\n"
+))
+```
+
+**Explore:** [Blue Jays team overview](vue_equipe_`r saison`.html) · [Example player report: Ernie Clement](fiche_Clement_Ernie.html)
+
+## What drives hitting production
+
+```{r coefs, fig.width=8, fig.height=3.8}
+coefs |>
+  mutate(label = fct_reorder(labels_var[var], beta),
+         sens  = if_else(beta > 0, "Higher = more production",
+                         "Higher = less production")) |>
+  ggplot(aes(beta, label, colour = sens)) +
+  geom_vline(xintercept = 0, colour = "grey60") +
+  geom_segment(aes(x = low, xend = high, yend = label), linewidth = 0.9) +
+  geom_point(size = 3.5) +
+  scale_colour_manual(values = c("Higher = more production" = "#D82129",
+                                 "Higher = less production" = "#3661AD"),
+                      name = NULL) +
+  labs(title = "Standardised effect on xwOBA (95% confidence interval)",
+       subtitle = paste0("Linear model, ", nrow(d_q), " qualified hitters, ", saison,
+                         ". All variables entered together."),
+       x = "Change in xwOBA (SD) for +1 SD of the variable", y = NULL) +
+  theme_minimal(base_size = 11.5) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey35"))
+```
+
+Bat speed, squared-up rate and chase rate are the clearest signals. The small positive sign of whiff rate should not be read on its own: whiffs overlap with contact quality and swing length, which already carry that information. Each variable's effect is measured **with the others held constant**, on a common scale (standard deviations), so the bars can be compared. Effects whose interval crosses zero are not distinguishable from no effect. These are associations across hitters, not proof that changing one variable will move production by that amount: they point to the hypotheses worth testing in player development.
+
+## The speed–efficiency trade-off
+
+```{r tradeoff, fig.width=8, fig.height=5}
+ggplot(d_q, aes(swing_length, avg_bat_speed)) +
+  geom_point(aes(colour = est_woba), size = 2.4, alpha = 0.85) +
+  geom_smooth(method = "lm", se = FALSE, colour = "grey40", linetype = 2) +
+  scale_colour_viridis_c(name = "xwOBA") +
+  labs(title = "Bat speed vs swing length",
+       subtitle = "A longer swing buys speed, but costs time to decide and contact",
+       x = "Swing length (ft)", y = "Bat speed (mph)") +
+  theme_minimal(base_size = 11.5) +
+  theme(plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey35"))
+```
+
+Hitters who generate speed **without** a long swing (top-left of the cloud) tend to produce the most. The development question is therefore not only *how fast* but *how efficiently*.
+
+## Four hitter profiles
+
+```{r profils-carte, fig.width=8, fig.height=5}
+ggplot(d_q, aes(swing_length, avg_bat_speed, colour = profil)) +
+  geom_point(size = 2.4, alpha = 0.85) +
+  scale_colour_manual(values = couleurs_profils,
+                      labels = function(x) profils_en[x], name = NULL) +
+  labs(title = paste("Hitter profiles, MLB", saison),
+       subtitle = "k-means clustering on bat speed, swing length, squared-up and whiff rates",
+       x = "Swing length (ft)", y = "Bat speed (mph)") +
+  theme_minimal(base_size = 11.5) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey35"))
+```
+
+```{r profils-table}
+desc_profils <- c(
+  "Contact"         = "Short, controlled swing; elite contact, little impact",
+  "Sous-puissance"  = "Below-average speed and average contact",
+  "Équilibré"       = "Above-average speed with average contact",
+  "Puissance brute" = "Fastest, longest swings; most whiffs")
+levier_profils <- c(
+  "Contact"         = "Add bat speed, protect contact",
+  "Sous-puissance"  = "Bat speed (physical screen first)",
+  "Équilibré"       = "Maintain; refine decisions",
+  "Puissance brute" = "Contact quality & swing efficiency")
+
+res$profils |>
+  mutate(p = as.character(profil)) |>
+  transmute(Profile              = profils_en[p],
+            Hitters              = n,
+            `Bat speed (mph)`    = sprintf("%.1f", avg_bat_speed),
+            `Swing length (ft)`  = sprintf("%.2f", swing_length),
+            `Squared-up / swing` = percent(squared_up_per_swing, 0.1),
+            `Whiff / swing`      = percent(whiff_per_swing, 0.1),
+            xwOBA                = sprintf("%.3f", est_woba),
+            `What it looks like` = desc_profils[p],
+            `Main lever`         = levier_profils[p]) |>
+  kable(align = "lrrrrrrll")
+```
+
+Production differs far less **between** profiles than the swings themselves do: contact hitters and raw-power hitters reach comparable xwOBA by opposite routes. Each profile has its own lever, which is why every player report starts from the profile before proposing an intervention.
+
+## Does gaining bat speed pay off?
+
+```{r evolution, fig.width=8, fig.height=5}
+ggplot(evol, aes(d_bat_speed, d_xwoba)) +
+  geom_hline(yintercept = 0, colour = "grey75") +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_point(aes(colour = jays), alpha = 0.75, size = 2.2) +
+  geom_smooth(method = "lm", colour = JAYS) +
+  geom_label_repel(data = filter(evol, jays), aes(label = nom_court(name)),
+                   colour = JAYS, size = 3, max.overlaps = Inf, seed = 1,
+                   fill = alpha("white", 0.85), label.size = 0,
+                   box.padding = 0.6, min.segment.length = 0) +
+  scale_colour_manual(values = c(`FALSE` = "grey60", `TRUE` = JAYS),
+                      labels = function(x) ifelse(x == "TRUE", "Blue Jays", "Other MLB"),
+                      name = NULL) +
+  labs(title = paste("Change in bat speed vs change in xwOBA,", saison - 1, "→", saison),
+       subtitle = paste0(nrow(evol), " hitters qualified in both seasons · r = ",
+                         sprintf("%.2f", ct$estimate)),
+       x = "Change in bat speed (mph)", y = "Change in xwOBA") +
+  theme_minimal(base_size = 11.5) +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey35"))
+```
+
+This is the closest public proxy for **intervention effectiveness**: when a hitter's bat speed moves, does his production follow? It mixes training effects with ageing, injuries and noise, so it frames the question rather than answers it. With internal data, the same view could isolate players who went through a specific programme.
+
+## Method and limits
+
+- **Data:** Baseball Savant public Statcast leaderboards (bat tracking, expected statistics, exit velocity and barrels, plate discipline), `r saison - 1`–`r saison`.
+- **Reference group:** `r nrow(d_q)` qualified hitters (570+ competitive swings). Models, profiles and percentiles are built on this group; hitters with fewer swings are placed against it and flagged as small samples.
+- **Outcome:** xwOBA, which values contact quality and plate outcomes while removing much of the luck of defence and ballparks. Actual wOBA is shown alongside in player reports.
+- **Limits:** cross-sectional associations, not causal effects; one-season windows are noisy; no biomechanical, force-plate or timing data. Those are exactly the layers an internal Performance Science dataset would add.
+
+<small>Analysis and reports built in R (tidyverse, ggplot2) and Quarto, with a reproducible pipeline from raw data to reports. Hugo Leligny.</small>

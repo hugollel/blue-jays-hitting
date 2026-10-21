@@ -1,0 +1,271 @@
+---
+title: "Toronto Blue Jays – Hitting Development Overview"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    fig-dpi: 200
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(ggrepel)
+library(scales)
+library(knitr)
+
+res     <- readRDS(here("outputs", "analysis.rds"))
+d_ref   <- res$d_ref
+hitters <- res$hitters
+saison  <- max(d_ref$season)
+d_q     <- filter(d_ref, qualifie)
+
+nom_court <- function(x) sub("^(.*), (.*)$", "\\2 \\1", x)
+slug_joueur <- function(x) x |>
+  stringi::stri_trans_general("Latin-ASCII") |>
+  str_replace_all("[^A-Za-z]+", "_") |>
+  str_remove("_$")
+
+profils_en <- c("Contact"         = "Contact hitter",
+                "Sous-puissance"  = "Under-powered",
+                "Équilibré"       = "Balanced",
+                "Puissance brute" = "Raw power")
+couleurs_profils <- c("Contact"         = "#2E86AB",
+                      "Sous-puissance"  = "#A23B72",
+                      "Équilibré"       = "#3BB273",
+                      "Puissance brute" = "#F18F01")
+
+# Priority lever and development priority -----------------------------
+leviers <- c("Contact"         = "Add bat speed, protect contact",
+             "Sous-puissance"  = "Add bat speed (physical screen first)",
+             "Équilibré"       = "Maintain; decisions & timing",
+             "Puissance brute" = "Contact quality & swing efficiency")
+
+jays <- d_ref |>
+  filter(jays) |>
+  mutate(
+    # A "balanced" profile can still hide one clear weakness
+    levier = unname(case_when(
+      profil == "Équilibré" & pct_squared_up_per_swing < 35 ~ leviers[["Puissance brute"]],
+      profil == "Équilibré" & pct_avg_bat_speed < 35        ~ leviers[["Contact"]],
+      profil == "Équilibré" & pct_oz_swing_percent < 35     ~ "Swing decisions (chase less)",
+      TRUE                                                  ~ leviers[as.character(profil)])),
+    # Percentile of the metric the lever targets
+    pct_levier = case_when(
+      str_detect(levier, "bat speed")     ~ pct_avg_bat_speed,
+      str_detect(levier, "Contact quality") ~ pct_squared_up_per_swing,
+      str_detect(levier, "chase less")    ~ pct_oz_swing_percent,
+      TRUE                                ~ NA_real_),
+    # Development score: low production + a clear, targeted weakness
+    score = round(((100 - pct_est_woba) + (100 - pct_levier)) / 2),
+    statut = case_when(
+      petit_echantillon                                     ~ "Watch",
+      levier == leviers[["Équilibré"]] | pct_est_woba >= 70 ~ "Maintain",
+      TRUE                                                  ~ "Ranked")
+  )
+
+# Ranking among reliable samples with a clear lever
+jays <- jays |>
+  mutate(rang = if_else(statut == "Ranked",
+                        as.integer(rank(-if_else(statut == "Ranked", score, -Inf),
+                                        ties.method = "first")),
+                        NA_integer_),
+         priorite = case_when(statut != "Ranked" ~ statut,
+                              rang <= 3          ~ "Top 3",
+                              TRUE               ~ "Next"),
+         priorite = factor(priorite, levels = c("Top 3", "Next", "Watch", "Maintain")))
+
+# Main strength / weakness (MLB percentile vs qualified hitters) -------
+forces <- c(avg_bat_speed        = "Bat speed",
+            squared_up_per_swing = "Contact quality",
+            whiff_per_swing      = "Whiff avoidance",
+            brl_percent          = "Barrels")
+
+fw <- jays |>
+  select(player_id, paste0("pct_", names(forces))) |>
+  pivot_longer(-player_id, names_to = "var", values_to = "pct") |>
+  mutate(lab = forces[sub("^pct_", "", var)]) |>
+  group_by(player_id) |>
+  summarise(force     = paste0(lab[which.max(pct)], " (", max(pct, na.rm = TRUE), ")"),
+            faiblesse = paste0(lab[which.min(pct)], " (", min(pct, na.rm = TRUE), ")"))
+
+jays <- left_join(jays, fw, by = "player_id")
+
+# Weighted averages (by competitive swings): Jays vs MLB ---------------
+moy <- function(d) d |>
+  summarise(across(c(avg_bat_speed, swing_length, squared_up_per_swing,
+                     whiff_per_swing, oz_swing_percent, bb_percent,
+                     k_percent, est_woba),
+                   ~ weighted.mean(.x, swings_competitive, na.rm = TRUE)))
+m_jays <- moy(jays)
+m_mlb  <- moy(d_ref)
+```
+
+<small>[← League overview](index.html)</small>
+
+**`r saison` season · `r nrow(jays)` hitters tracked (`r sum(jays$qualifie)` qualified, `r sum(jays$petit_echantillon)` small samples)**
+
+```{r resume, results='asis'}
+hauts <- jays |> filter(priorite == "Top 3") |>
+  arrange(rang) |> pull(name) |> nom_court()
+nb <- table(factor(jays$profil, levels = names(profils_en)))
+nb_txt <- paste0(nb, " ", tolower(profils_en[names(nb)]), collapse = ", ")
+
+cat(glue::glue(
+  "::: {{.callout-note appearance=\"simple\"}}\n",
+  "Weighted by swings, Jays hitters average **{sprintf('%.1f', m_jays$avg_bat_speed)} mph** ",
+  "of bat speed vs {sprintf('%.1f', m_mlb$avg_bat_speed)} mph for MLB, with a squared-up ",
+  "rate of {percent(m_jays$squared_up_per_swing, 0.1)} vs ",
+  "{percent(m_mlb$squared_up_per_swing, 0.1)}. Profiles: {nb_txt}.",
+  "{if (length(hauts) > 0) paste0(' **Top 3 development priorities:** ', paste(hauts, collapse = ', '), '.') else ''}\n",
+  ":::\n"
+))
+```
+
+## Roster map
+
+```{r carte, fig.width=10, fig.height=5.8}
+ggplot(d_q, aes(swing_length, avg_bat_speed)) +
+  geom_point(colour = "grey85", size = 1.4) +
+  geom_point(data = jays, aes(colour = profil, shape = petit_echantillon),
+             size = 3.4, stroke = 1.3) +
+  geom_text_repel(data = jays, aes(label = nom_court(name), colour = profil),
+                  size = 3.3, max.overlaps = Inf, seed = 1,
+                  box.padding = 0.4, show.legend = FALSE) +
+  scale_colour_manual(values = couleurs_profils,
+                      labels = function(x) profils_en[x], name = NULL) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1),
+                     labels = function(x) ifelse(x == "TRUE",
+                                                 "Small sample (< 300 swings)",
+                                                 "Reliable sample"),
+                     name = NULL) +
+  labs(title = paste("Blue Jays hitters on the MLB swing map,", saison),
+       subtitle = "Grey: qualified MLB hitters. Colour: profile. Open circle: small sample.",
+       x = "Swing length (ft)", y = "Bat speed (mph)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(colour = "grey35"))
+```
+
+## Development priorities
+
+```{r priorites}
+jays |>
+  arrange(priorite, rang, desc(score)) |>
+  mutate(
+    fiche  = paste0("fiche_", slug_joueur(name), ".html"),
+    Player = if_else(file.exists(here("reports", fiche)),
+                     paste0("[", nom_court(name), "](", fiche, ")"),
+                     nom_court(name))
+  ) |>
+  transmute(
+    `#`                 = if_else(is.na(rang), "", as.character(rang)),
+    Player,
+    Swings              = paste0(swings_competitive,
+                                 if_else(petit_echantillon, " ⚠", "")),
+    Profile             = profils_en[as.character(profil)],
+    `Main strength`     = force,
+    `Main weakness`     = faiblesse,
+    `xwOBA (pct) / wOBA` = paste0(sprintf("%.3f", est_woba), " (", pct_est_woba,
+                                  ") / ", sprintf("%.3f", woba)),
+    `Priority lever`    = levier,
+    Score               = if_else(is.na(score), "", as.character(score)),
+    Priority            = as.character(priorite)
+  ) |>
+  kable(align = "rlrllllrrl")
+```
+
+<small>Numbers in brackets are MLB percentiles (1–100) vs qualified hitters. wOBA = actual production. **Score** (0–100) = average of (100 − xwOBA percentile) and (100 − percentile of the metric targeted by the lever): the lower the production and the clearer the targeted weakness, the higher the priority. Hitters with a reliable sample and a clear lever are ranked; the **Top 3** are highlighted. **Watch**: fewer than 300 competitive swings, early signals only (⚠). **Maintain**: balanced profile or xwOBA at the 70th percentile or above. Click a name to open the individual report.</small>
+
+## Team vs MLB
+
+```{r equipe-mlb}
+metr <- c(avg_bat_speed        = "Bat speed (mph)",
+          swing_length         = "Swing length (ft)",
+          squared_up_per_swing = "Squared-up / swing",
+          whiff_per_swing      = "Whiff / swing",
+          oz_swing_percent     = "Chase rate",
+          bb_percent           = "Walk %",
+          k_percent            = "Strikeout %",
+          est_woba             = "xwOBA")
+
+fmt <- function(v, x) case_when(
+  v %in% c("squared_up_per_swing", "whiff_per_swing") ~ percent(x, accuracy = 0.1),
+  v %in% c("oz_swing_percent", "bb_percent", "k_percent") ~ sprintf("%.1f%%", x),
+  v == "est_woba"     ~ sprintf("%.3f", x),
+  v == "swing_length" ~ sprintf("%.2f", x),
+  TRUE                ~ sprintf("%.1f", x))
+
+fmt_diff <- function(v, x) case_when(
+  v %in% c("squared_up_per_swing", "whiff_per_swing") ~ sprintf("%+.1f pts", 100 * x),
+  v %in% c("oz_swing_percent", "bb_percent", "k_percent") ~ sprintf("%+.1f pts", x),
+  v == "est_woba"     ~ sprintf("%+.3f", x),
+  v == "swing_length" ~ sprintf("%+.2f", x),
+  TRUE                ~ sprintf("%+.1f", x))
+
+tibble(var = names(metr),
+       j = unlist(m_jays[names(metr)]),
+       m = unlist(m_mlb[names(metr)])) |>
+  transmute(Metric = metr[var],
+            `Blue Jays` = fmt(var, j),
+            MLB = fmt(var, m),
+            Difference = fmt_diff(var, j - m)) |>
+  kable(align = "lrrr")
+```
+
+<small>Averages weighted by competitive swings, all tracked hitters.</small>
+
+## Year-over-year changes
+
+```{r evolution}
+s0 <- saison - 1
+s1 <- saison
+
+# Note: inside filter(), "jays" would refer to the jays COLUMN of
+# hitters, not to the table of Jays players -> take the ids first.
+ids_jays <- jays$player_id
+
+mov <- hitters |>
+  filter(player_id %in% ids_jays) |>
+  select(player_id, name, season, avg_bat_speed,
+         squared_up_per_swing, est_woba) |>
+  pivot_wider(id_cols = c(player_id, name), names_from = season,
+              values_from = c(avg_bat_speed, squared_up_per_swing, est_woba)) |>
+  drop_na()
+
+if (nrow(mov) > 0) {
+  mov |>
+    mutate(
+      d_bs  = .data[[paste0("avg_bat_speed_", s1)]] - .data[[paste0("avg_bat_speed_", s0)]],
+      d_sq  = .data[[paste0("squared_up_per_swing_", s1)]] - .data[[paste0("squared_up_per_swing_", s0)]],
+      d_xw  = .data[[paste0("est_woba_", s1)]] - .data[[paste0("est_woba_", s0)]]
+    ) |>
+    arrange(desc(d_xw)) |>
+    transmute(
+      Player               = nom_court(name),
+      `Bat speed (mph)`    = sprintf("%.1f → %.1f (%+.1f)",
+                                     .data[[paste0("avg_bat_speed_", s0)]],
+                                     .data[[paste0("avg_bat_speed_", s1)]], d_bs),
+      `Squared-up / swing` = sprintf("%.1f%% → %.1f%% (%+.1f pts)",
+                                     100 * .data[[paste0("squared_up_per_swing_", s0)]],
+                                     100 * .data[[paste0("squared_up_per_swing_", s1)]],
+                                     100 * d_sq),
+      xwOBA                = sprintf("%.3f → %.3f (%+.3f)",
+                                     .data[[paste0("est_woba_", s0)]],
+                                     .data[[paste0("est_woba_", s1)]], d_xw)
+    ) |>
+    kable(align = "lrrr")
+}
+```
+
+<small>`r s0` values may come from another team for players acquired since. Sorted by change in xwOBA.</small>
+
+---
+
+<small>Data: Baseball Savant, public Statcast data (bat tracking, expected stats, exit velocity). Profiles, percentiles and model are based on the `r nrow(d_q)` qualified MLB hitters in `r saison` (570+ competitive swings); other hitters are placed against that reference. Internal biomechanics and force-plate data would turn these leads into measured diagnoses. Report: Hugo Leligny.</small>

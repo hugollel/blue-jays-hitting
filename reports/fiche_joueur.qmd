@@ -1,0 +1,452 @@
+---
+title: "Hitter Development Report"
+params:
+  joueur: "Clement, Ernie"
+format:
+  html:
+    embed-resources: true
+    theme: cosmo
+    fig-dpi: 200
+    page-layout: article
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(ggrepel)
+library(scales)
+library(knitr)
+
+res     <- readRDS(here("outputs", "analysis.rds"))
+d_ref   <- res$d_ref
+hitters <- res$hitters
+saison  <- max(d_ref$season)
+
+# Reference group = qualified hitters (model, map, comparables).
+# Percentiles (1-100, vs qualified hitters) come from 03_analysis.R.
+d_q <- filter(d_ref, qualifie)
+
+J <- filter(d_ref, name == params$joueur)
+if (nrow(J) != 1) stop("Player not found in ", saison, ": ", params$joueur)
+
+JAYS <- "#134A8E"
+
+# Helpers ------------------------------------------------------------
+nom_court <- function(x) sub("^(.*), (.*)$", "\\2 \\1", x)
+nom <- nom_court(J$name)
+
+ord <- function(x) {
+  x <- round(x)
+  suf <- if (x %% 100 %in% 11:13) "th" else
+    switch(as.character(x %% 10), "1" = "st", "2" = "nd", "3" = "rd", "th")
+  paste0(x, suf)
+}
+
+niveau <- function(p) case_when(p >= 80 ~ "elite", p >= 60 ~ "above-average",
+                                p >= 40 ~ "average", p >= 20 ~ "below-average",
+                                TRUE ~ "poor")
+art <- function(w) if (substr(w, 1, 1) %in% c("a", "e", "i", "o", "u")) "an" else "a"
+
+profils_en <- c("Contact"         = "Contact hitter",
+                "Sous-puissance"  = "Under-powered",
+                "Équilibré"       = "Balanced",
+                "Puissance brute" = "Raw power")
+profil     <- as.character(J$profil)
+profil_txt <- profils_en[[profil]]
+
+levier <- switch(profil,
+                 "Contact"         = "speed",
+                 "Sous-puissance"  = "speed",
+                 "Puissance brute" = "contact",
+                 "Équilibré"       = "maintain")
+
+# A "balanced" profile can still hide one clear weakness
+if (levier == "maintain") {
+  if (isTRUE(J$pct_squared_up_per_swing < 35)) {
+    levier <- "contact"
+  } else if (isTRUE(J$pct_avg_bat_speed < 35)) {
+    levier <- "speed"
+  } else if (isTRUE(J$pct_oz_swing_percent < 35)) {
+    levier <- "decisions"
+  }
+}
+
+# Player's two seasons (used in several sections)
+evn <- hitters |>
+  filter(player_id == J$player_id) |>
+  arrange(season) |>
+  select(season, avg_bat_speed, swing_length, squared_up_per_swing,
+         whiff_per_swing, est_woba, woba)
+deux_saisons <- nrow(evn) == 2
+
+# Actual wOBA vs expected (xwOBA), in points, for each season
+ecarts   <- round(1000 * (evn$woba - evn$est_woba))
+# Only claimed when it holds over two seasons (one season = too noisy)
+surperf  <- deux_saisons && all(ecarts >= 10)
+sousperf <- deux_saisons && all(ecarts <= -10)
+```
+
+<small>[← Team overview](vue_equipe_`r saison`.html) · [League overview](index.html)</small>
+
+# `r nom`
+
+**`r saison` season · Profile: `r profil_txt` · xwOBA `r number(J$est_woba, 0.001)` (`r ord(J$pct_est_woba)` percentile)**
+
+```{r echantillon, results='asis'}
+if (J$petit_echantillon) {
+  cat(glue::glue(
+    "::: {{.callout-warning appearance=\"simple\"}}\n",
+    "**Small sample:** {J$swings_competitive} competitive swings in {saison}. ",
+    "Bat speed stabilises quickly, but contact and outcome metrics should be ",
+    "read as early signals, not conclusions.\n",
+    ":::\n"))
+}
+```
+
+```{r takeaway, results='asis'}
+msg <- switch(levier,
+  speed    = "Main lever: **add bat speed without giving back contact.**",
+  contact  = "Main lever: **turn existing bat speed into quality contact.**",
+  decisions = "Main lever: **better swing decisions – chase less.**",
+  maintain = "Main lever: **maintain the swing; look for gains in decisions and timing.**")
+
+niv_c <- niveau(J$pct_squared_up_per_swing)
+
+cat(glue::glue(
+  "::: {{.callout-note appearance=\"simple\"}}\n",
+  "{nom} squares up the ball at {art(niv_c)} {niv_c} rate ",
+  "({ord(J$pct_squared_up_per_swing)} percentile) with bat speed in the ",
+  "{ord(J$pct_avg_bat_speed)} percentile. {msg}\n",
+  ":::\n"
+))
+```
+
+## Swing profile vs MLB
+
+:::: {.columns}
+
+::: {.column width="48%"}
+```{r percentiles, fig.width=5, fig.height=6.4}
+labels <- c(avg_bat_speed        = "Bat speed",
+            swing_length         = "Swing length†",
+            squared_up_per_swing = "Squared-up / swing",
+            blast_per_swing      = "Blasts / swing",
+            whiff_per_swing      = "Whiff / swing*",
+            avg_hit_speed        = "Avg exit velo",
+            brl_percent          = "Barrel %",
+            oz_swing_percent     = "Chase rate*",
+            bb_percent           = "Walk %",
+            k_percent            = "Strikeout %*",
+            est_woba             = "xwOBA")
+
+pct <- J |>
+  select(paste0("pct_", names(labels))) |>
+  pivot_longer(everything(), names_to = "var", values_to = "pct") |>
+  mutate(var = sub("^pct_", "", var))
+
+val <- J |>
+  select(all_of(names(labels))) |>
+  pivot_longer(everything(), names_to = "var", values_to = "val")
+
+p <- left_join(pct, val, by = "var") |>
+  mutate(
+    label   = factor(labels[var], levels = rev(labels)),
+    couleur = if_else(var == "swing_length", NA_real_, pct),  # neutral
+    val_txt = case_when(
+      var %in% c("squared_up_per_swing", "blast_per_swing", "whiff_per_swing")
+                              ~ percent(val, accuracy = 0.1),
+      var == "est_woba"       ~ number(val, accuracy = 0.001),
+      var %in% c("brl_percent", "oz_swing_percent", "bb_percent", "k_percent")
+                              ~ paste0(round(val, 1), "%"),
+      var == "swing_length"   ~ paste0(round(val, 2), " ft"),
+      TRUE                    ~ paste0(round(val, 1), " mph")
+    )
+  )
+
+ggplot(p, aes(y = label)) +
+  geom_segment(aes(x = 0, xend = 100, yend = label),
+               colour = "grey92", linewidth = 5.5, lineend = "round") +
+  geom_segment(aes(x = 0, xend = pct, yend = label, colour = couleur),
+               linewidth = 5.5, lineend = "round") +
+  geom_point(aes(x = pct, fill = couleur), shape = 21, size = 8.5,
+             colour = "white", stroke = 1.2) +
+  geom_text(aes(x = pct, label = round(pct)), size = 3.3,
+            colour = "white", fontface = "bold") +
+  geom_text(aes(x = 109, label = val_txt), hjust = 0, size = 3.6) +
+  scale_colour_gradient2(low = "#3661AD", mid = "#B4BAC6", high = "#D82129",
+                         midpoint = 50, limits = c(1, 100),
+                         na.value = "grey55", guide = "none",
+                         aesthetics = c("colour", "fill")) +
+  scale_x_continuous(limits = c(-3, 135)) +
+  labs(title = "MLB percentiles (100 = best)",
+       caption = paste0("Red = strength, blue = weakness.\n",
+                        "* fewer = better (higher percentile).\n",
+                        "† trade-off, shown neutral: higher = longer swing.")) +
+  theme_minimal(base_size = 12.5) +
+  theme(axis.title = element_blank(), axis.text.x = element_blank(),
+        panel.grid = element_blank(),
+        plot.title = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0, colour = "grey35"))
+```
+:::
+
+::: {.column width="4%"}
+:::
+
+::: {.column width="48%"}
+```{r carte, fig.width=5, fig.height=6.4}
+comp <- switch(levier,
+  speed    = filter(d_q, squared_up_per_swing >= J$squared_up_per_swing - 0.02,
+                    avg_bat_speed >= J$avg_bat_speed + 2,
+                    avg_bat_speed <= J$avg_bat_speed + 5),
+  contact  = filter(d_q, abs(avg_bat_speed - J$avg_bat_speed) <= 1,
+                    squared_up_per_swing >= J$squared_up_per_swing + 0.03),
+  decisions = filter(d_q, abs(avg_bat_speed - J$avg_bat_speed) <= 1.5,
+                     abs(squared_up_per_swing - J$squared_up_per_swing) <= 0.03,
+                     oz_swing_percent <= J$oz_swing_percent - 3),
+  maintain = filter(d_q, abs(avg_bat_speed - J$avg_bat_speed) <= 1,
+                    abs(squared_up_per_swing - J$squared_up_per_swing) <= 0.02,
+                    est_woba > J$est_woba)
+) |>
+  filter(name != J$name) |>
+  arrange(desc(est_woba)) |>
+  slice_head(n = 4)
+
+comp_desc <- switch(levier,
+  speed    = "Open circles: similar contact, 2-5 mph more bat speed",
+  contact  = "Open circles: similar bat speed, better contact",
+  decisions = "Open circles: similar swing, chasing 3+ pts less",
+  maintain = "Open circles: similar swing, higher xwOBA")
+
+ggplot(d_q, aes(swing_length, avg_bat_speed)) +
+  geom_point(aes(colour = profil), alpha = 0.3, size = 1.6) +
+  geom_point(data = comp, shape = 21, fill = "white", colour = "grey15",
+             size = 2.8, stroke = 1.1) +
+  geom_label_repel(data = comp, aes(label = nom_court(name)),
+                   size = 3.2, colour = "grey15", fill = alpha("white", 0.85),
+                   label.size = 0, box.padding = 0.7, point.padding = 0.3,
+                   min.segment.length = 0, max.overlaps = Inf, seed = 1,
+                   direction = "both", xlim = c(NA, NA)) +
+  geom_point(data = J, colour = JAYS, size = 4.5) +
+  geom_label_repel(data = J, aes(label = nom), colour = JAYS,
+                   fontface = "bold", size = 3.6, min.segment.length = 0,
+                   nudge_y = -2, seed = 1) +
+  scale_colour_manual(values = c("Contact"         = "#2E86AB",
+                                 "Sous-puissance"  = "#A23B72",
+                                 "Équilibré"       = "#3BB273",
+                                 "Puissance brute" = "#F18F01"),
+                      labels = function(x) profils_en[x], name = NULL) +
+  labs(title = "Bat speed vs swing length",
+       subtitle = comp_desc,
+       x = "Swing length (ft)", y = "Bat speed (mph)") +
+  theme_minimal(base_size = 12.5) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(size = 9.5, colour = "grey30")) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 3),
+                               nrow = 2))
+```
+:::
+
+::::
+
+## Year-over-year
+
+```{r evolution}
+fmt <- function(d) tibble(
+  `Bat speed (mph)`    = sprintf("%.1f", d$avg_bat_speed),
+  `Swing length (ft)`  = sprintf("%.2f", d$swing_length),
+  `Squared-up / swing` = percent(d$squared_up_per_swing, accuracy = 0.1),
+  `Whiff / swing`      = percent(d$whiff_per_swing, accuracy = 0.1),
+  xwOBA                = sprintf("%.3f", d$est_woba),
+  `wOBA (actual)`      = sprintf("%.3f", d$woba)
+)
+
+tab <- bind_cols(Season = as.character(evn$season), fmt(evn))
+
+if (deux_saisons) {
+  dl <- evn[2, -1] - evn[1, -1]
+  tab <- bind_rows(tab, tibble(
+    Season               = "Change",
+    `Bat speed (mph)`    = sprintf("%+.1f", dl$avg_bat_speed),
+    `Swing length (ft)`  = sprintf("%+.2f", dl$swing_length),
+    `Squared-up / swing` = sprintf("%+.1f pts", 100 * dl$squared_up_per_swing),
+    `Whiff / swing`      = sprintf("%+.1f pts", 100 * dl$whiff_per_swing),
+    xwOBA                = sprintf("%+.3f", dl$est_woba),
+    `wOBA (actual)`      = sprintf("%+.3f", dl$woba)
+  ))
+}
+
+kable(tab, align = "lrrrrrr")
+```
+
+```{r evolution-texte, results='asis'}
+if (deux_saisons) {
+  dbs <- dl$avg_bat_speed
+  dsq <- 100 * dl$squared_up_per_swing
+  dxw <- 1000 * dl$est_woba
+  sens <- function(x) if (x >= 0) "rose" else "fell"
+
+  vit <- if (abs(dbs) < 0.5) "bat speed stayed flat" else
+    paste0("bat speed ", sens(dbs), " ", abs(round(dbs, 1)), " mph")
+
+  cat(glue::glue(
+    "**From {evn$season[1]} to {evn$season[2]}:** {vit}, squared-up rate ",
+    "{sens(dsq)} {abs(round(dsq, 1))} pts and xwOBA {sens(dxw)} ",
+    "{abs(round(dxw))} points."
+  ))
+
+  if (levier == "speed" && dsq <= -2 && abs(dbs) < 0.5) {
+    cat(" With this little bat speed, a small loss of contact turns directly",
+        "into lost production: **the profile has very little margin.**")
+  }
+}
+
+quand <- if (deux_saisons) "in both seasons" else paste("in", saison)
+ecarts_txt <- paste(sprintf("%+d", ecarts), collapse = ", ")
+
+if (surperf || sousperf) cat("\n\n")
+
+if (surperf) {
+  cat(glue::glue(
+    "Actual wOBA beat xwOBA {quand} ({ecarts_txt} pts), suggesting a ",
+    "batted-ball skill (e.g. placement) **worth protecting** – to verify with ",
+    "spray-chart data."
+  ))
+} else if (sousperf) {
+  cat(glue::glue(
+    "Actual wOBA fell short of xwOBA {quand} ({ecarts_txt} pts): results ",
+    "may understate his contact quality – to verify with spray-chart and ",
+    "batted-ball data."
+  ))
+}
+```
+
+## What the model says
+
+```{r modele, results='asis'}
+m_raw <- lm(est_woba ~ avg_bat_speed + swing_length +
+              squared_up_per_swing + whiff_per_swing, data = d_q)
+b_speed <- coef(m_raw)[["avg_bat_speed"]]
+b_sq    <- coef(m_raw)[["squared_up_per_swing"]]
+r2      <- summary(m_raw)$r.squared
+r2_dec  <- summary(lm(est_woba ~ avg_bat_speed + swing_length +
+                        squared_up_per_swing + whiff_per_swing +
+                        oz_swing_percent + z_swing_percent,
+                      data = d_q))$r.squared
+
+cat(glue::glue(
+  "Across {nrow(d_q)} qualified MLB hitters in {saison}, at equal swing length, contact ",
+  "and whiff rate, **+1 mph of bat speed is associated with ",
+  "+{round(1000 * b_speed)} points of xwOBA**, and +1 point of squared-up rate ",
+  "with +{round(10 * b_sq)} points. The swing metrics explain ",
+  "{percent(r2, 1)} of the differences in production between hitters; ",
+  "adding swing decisions (chase and in-zone swing rates) raises it to ",
+  "{percent(r2_dec, 1)}. The rest comes from timing, launch direction and ",
+  "factors public data does not capture.\n\n",
+  "These are cross-sectional associations, not guarantees: they set the ",
+  "hypothesis to test with the player, not the expected outcome."
+))
+```
+
+## Development plan
+
+```{r plan, results='asis'}
+alerte <- ""
+if (deux_saisons && levier == "speed") {
+  dsq <- 100 * (evn$squared_up_per_swing[2] - evn$squared_up_per_swing[1])
+  if (dsq <= -3) {
+    alerte <- paste0(
+      " *This threshold was already crossed in ", evn$season[2], " (",
+      sprintf("%+.1f", dsq), " pts) without any gain in speed: the reference ",
+      "level to protect is ", evn$season[1], " (",
+      percent(evn$squared_up_per_swing[1], accuracy = 0.1), ").*")
+  }
+}
+
+txt <- switch(levier,
+
+speed = glue::glue(
+"**Diagnosis.** {nom}'s contact is {niveau(J$pct_squared_up_per_swing)} ",
+"({ord(J$pct_squared_up_per_swing)} percentile in squared-up rate, ",
+"{ord(J$pct_whiff_per_swing)} in whiff avoidance), but his bat speed ",
+"({round(J$avg_bat_speed, 1)} mph, {ord(J$pct_avg_bat_speed)} percentile) ",
+"caps the damage on contact: {round(J$avg_hit_speed, 1)} mph average exit ",
+"velocity, {round(J$brl_percent, 1)}% barrels.
+
+**Priority.** Add bat speed while protecting contact quality",
+"{if (surperf) ' and batted-ball placement' else ''}.
+
+1. **Screen** – Is bat speed limited by physical capacity or by sequencing? ",
+"Force-plate profile (CMJ, IMTP: peak force, RFD, asymmetries) and rotational ",
+"med-ball throw, read alongside the biomechanics data (kinematic sequence, ",
+"lead-leg block, hip-shoulder separation).
+2. **Intervene** – If capacity-limited: lower-body force and rotational power ",
+"block. If sequencing-limited: intent-based swings, overload/underload bat ",
+"training with the hitting coaches.
+3. **Monitor** – Bat speed and squared-up rate each week (cage, BP, games). ",
+"Red flag: squared-up rate dropping by more than 3 points as speed rises.",
+"{alerte}"),
+
+contact = glue::glue(
+"**Diagnosis.** {nom} already generates {niveau(J$pct_avg_bat_speed)} bat speed ",
+"({round(J$avg_bat_speed, 1)} mph, {ord(J$pct_avg_bat_speed)} percentile), but ",
+"his contact quality ({ord(J$pct_squared_up_per_swing)} percentile in squared-up ",
+"rate) and whiff rate ({ord(J$pct_whiff_per_swing)} percentile) limit how much ",
+"of that speed turns into damage.
+
+**Priority.** Convert speed into quality contact.
+
+1. **Screen** – Swing length, attack angle and path vs pitch location; timing.
+2. **Intervene** – Constraint-based drills for a more efficient path; timing work.
+3. **Monitor** – Squared-up and whiff rates each week, with bat speed protected."),
+
+decisions = glue::glue(
+"**Diagnosis.** {nom}'s swing is sound ({ord(J$pct_avg_bat_speed)} percentile in ",
+"bat speed, {ord(J$pct_squared_up_per_swing)} in squared-up rate), but he chases ",
+"{round(J$oz_swing_percent, 1)}% of pitches outside the zone ",
+"({ord(J$pct_oz_swing_percent)} percentile): too many swings go to pitches he ",
+"cannot damage.
+
+**Priority.** Improve swing decisions without losing aggressiveness in the zone.
+
+1. **Screen** – Chase by pitch type, location and count (two-strike approach).
+2. **Intervene** – Pitch-recognition and decision training with the hitting ",
+"coaches (video, constraint-based BP).
+3. **Monitor** – Chase rate and in-zone swing rate each week; bat speed protected."),
+
+maintain = glue::glue(
+"**Diagnosis.** {nom} combines {niveau(J$pct_avg_bat_speed)} bat speed ",
+"({ord(J$pct_avg_bat_speed)} percentile) with {niveau(J$pct_squared_up_per_swing)} ",
+"contact ({ord(J$pct_squared_up_per_swing)} percentile).
+
+**Priority.** Maintain the swing; marginal gains are more likely in swing ",
+"decisions and timing than in mechanics.
+
+1. **Monitor** – Track bat speed across the season to catch fatigue-related drops.
+2. **Explore** – Chase and in-zone decisions with the hitting coaches.")
+)
+
+cat(txt)
+```
+
+```{r comparables}
+if (nrow(comp) > 0) {
+  comp |>
+    transmute(`Comparable hitter` = nom_court(name),
+              `Bat speed (mph)`    = sprintf("%.1f", avg_bat_speed),
+              `Squared-up / swing` = percent(squared_up_per_swing, accuracy = 0.1),
+              xwOBA                = sprintf("%.3f", est_woba)) |>
+    kable(align = "lrrr",
+          caption = paste0("Reference points – ",
+                           tolower(sub("^Open circles: ", "", comp_desc))))
+}
+```
+
+---
+
+<small>Data: Baseball Savant, public Statcast data (bat tracking, expected stats, exit velocity). Bat speed = average of the top 90% of competitive swings. Percentiles (1–100), model and profiles are based on the `r nrow(d_q)` qualified MLB hitters in `r saison` (570+ competitive swings). Profiles: k-means on bat speed, swing length, squared-up and whiff rates. Internal biomechanics data would replace the screening hypotheses with measured values. Report: Hugo Leligny.</small>
