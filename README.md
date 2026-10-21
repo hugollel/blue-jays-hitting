@@ -3,7 +3,7 @@
 A reproducible R + Quarto pipeline that turns public Statcast data into
 league, team and player-level hitting development reports.
 
-**Live reports:** `https://<your-github-username>.github.io/blue-jays-hitting/`
+**Live reports:** `https://hugollel.github.io/blue-jays-hitting/`
 
 | Page | Audience | Question it answers |
 |---|---|---|
