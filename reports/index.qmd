@@ -71,10 +71,11 @@ pente   <- round(1000 * coef(lm(d_xwoba ~ d_bat_speed, data = evol))[["d_bat_spe
 
 ```{r constats, results='asis'}
 evol_txt <- if (ct$p.value < 0.05 && ct$estimate > 0) {
-  glue::glue("**Gaining bat speed pays off.** Among {nrow(evol)} hitters ",
+  glue::glue("**Bat speed and production move together over time.** Among {nrow(evol)} hitters ",
              "qualified in both seasons, a change in bat speed from {saison - 1} to ",
              "{saison} went with a change in xwOBA in the same direction ",
-             "(r = {sprintf('%.2f', ct$estimate)}, about {pente} points per mph).")
+             "(r = {sprintf('%.2f', ct$estimate)}, about {pente} points per mph). ",
+             "An association, not proof of cause: it shows where development questions are worth testing.")
 } else {
   glue::glue("**Year-to-year changes are noisy.** Among {nrow(evol)} hitters ",
              "qualified in both seasons, changes in bat speed and in xwOBA were only ",
@@ -85,15 +86,15 @@ evol_txt <- if (ct$p.value < 0.05 && ct$estimate > 0) {
 cat(glue::glue(
   "::: {{.callout-note appearance=\"simple\"}}\n",
   "## Key findings\n\n",
-  "1. **Bat speed is the strongest driver of production.** At equal swing length ",
+  "1. **Bat speed is the strongest correlate of production.** At equal swing length ",
   "and contact, +1 mph of bat speed is associated with about +{pts_mph} points ",
   "of xwOBA across {nrow(d_q)} qualified hitters.\n",
   "2. **Efficiency matters.** At equal bat speed, a longer swing tends to go with ",
-  "lower production{if (p_len < 0.05) ' (significant in the swing-only model)' else ''}: ",
-  "speed has to come from the body, not from a longer path.\n",
+  "lower production{if (p_len < 0.05) ' (significant in the swing-only model)' else ''}, ",
+  "suggesting that efficient speed matters more than a longer path.\n",
   "3. **There is no single ideal swing.** Four distinct hitter profiles reach ",
-  "similar production through different routes, so development has to be ",
-  "individual.\n",
+  "similar production through different routes, suggesting that development ",
+  "should be individualized.\n",
   "4. {evol_txt}\n",
   "5. **Public data explains about half of the picture.** Swing metrics explain ",
   "{percent(adj_swing, 1)} of the differences in xwOBA between hitters, ",
