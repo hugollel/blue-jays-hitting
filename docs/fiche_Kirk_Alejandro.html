@@ -2415,6 +2415,19 @@ color: #1f2a44; font-size: 0.9rem; flex-wrap: wrap;
   requestAnimationFrame(frame);
 })();
 </script>
+
+<script>
+/* Statistiques de visites (GoatCounter) : chargé seulement sur le site
+   en ligne, pour ne pas compter les ouvertures locales des fichiers. */
+(function () {
+  if (!/github\.io$/.test(location.hostname)) return;
+  var s = document.createElement('script');
+  s.async = true;
+  s.src = 'https://gc.zgo.at/count.js';
+  s.setAttribute('data-goatcounter', 'https://hugollel.goatcounter.com/count');
+  document.body.appendChild(s);
+})();
+</script>
 <script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
     const icon = "";
