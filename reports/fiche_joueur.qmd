@@ -5,6 +5,7 @@ params:
 format:
   html:
     embed-resources: true
+    include-after-body: _signature.html
     theme: cosmo
     fig-dpi: 200
     page-layout: article

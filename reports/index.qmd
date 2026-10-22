@@ -4,6 +4,7 @@ subtitle: "Bat tracking, swing profiles and development levers – public Statca
 format:
   html:
     embed-resources: true
+    include-after-body: _signature.html
     theme: cosmo
     fig-dpi: 200
     page-layout: article
