@@ -2336,6 +2336,107 @@ vertical-align: -.125em;
 
 </main>
 <!-- /main column -->
+<!-- Signature : petit coureur animé (casquette à l'envers, balle en main, baskets blanches)
+     qui accélère puis freine, + nom. Inclus en bas de chaque page. -->
+<style>
+.hl-signature {
+display: flex; align-items: center; justify-content: center; gap: 14px;
+margin: 48px auto 24px; padding-top: 18px;
+border-top: 1px solid #e3e6ea;
+color: #1f2a44; font-size: 0.9rem; flex-wrap: wrap;
+}
+.hl-signature .hl-runner { width: 58px; height: 58px; flex: none; overflow: visible; }
+.hl-signature .hl-name { font-weight: 600; letter-spacing: 0.02em; }
+.hl-signature .hl-role { color: #5b6475; }
+.hl-signature a { color: #1f2a44; text-decoration: none; border-bottom: 1px solid #c9ced6; }
+.hl-signature a:hover { border-bottom-color: #1f2a44; }
+</style>
+
+<div class="hl-signature">
+  <svg class="hl-runner" viewbox="0 0 44 50" role="img" aria-label="Running figure">
+    <g class="body" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <!-- membres arrière (plus clairs) -->
+      <polyline class="arm back" points="21.6,15.5 18.5,21 23,23.5" opacity="0.4"></polyline>
+      <g class="leg back" opacity="0.4">
+        <polyline points="18,27 21,36 17,44.5"></polyline>
+        <path d="M15.6,46.1 L15.8,43.9 Q17.6,43.5 18.8,44.4 L21.3,45.2 Q21.8,46.1 21.1,46.3 Z" fill="#ffffff" stroke="currentColor" stroke-width="0.9" />
+        <line x1="15.9" y1="44.3" x2="15.8" y2="45.8" stroke="#C8443A" stroke-width="1.5"></line>
+        <line x1="16.2" y1="46.3" x2="21" y2="46.3" stroke="#C8443A" stroke-width="0.9"></line>
+      </g>
+      <!-- tronc + tête -->
+      <line x1="22.5" y1="13.5" x2="18" y2="27"></line>
+      <circle cx="24.6" cy="8.2" r="3.9" fill="currentColor" stroke="none"></circle>
+      <!-- casquette à l'envers : calotte + visière vers l'arrière -->
+      <path d="M20.6,7.5 A4.1,4.1 0 0 1 28.7,7.5 Z" fill="#C8443A" stroke="none" />
+      <line x1="21.2" y1="7.3" x2="16.8" y2="8.6" stroke="#C8443A" stroke-width="2"></line>
+      <!-- membres avant -->
+      <g class="leg front">
+        <polyline points="18,27 21,36 17,44.5"></polyline>
+        <path d="M15.6,46.1 L15.8,43.9 Q17.6,43.5 18.8,44.4 L21.3,45.2 Q21.8,46.1 21.1,46.3 Z" fill="#ffffff" stroke="currentColor" stroke-width="0.9" />
+        <line x1="15.9" y1="44.3" x2="15.8" y2="45.8" stroke="#C8443A" stroke-width="1.5"></line>
+        <line x1="16.2" y1="46.3" x2="21" y2="46.3" stroke="#C8443A" stroke-width="0.9"></line>
+      </g>
+      <g class="arm front">
+        <polyline points="21.6,15.5 18.5,21 23,23.5"></polyline>
+        <!-- balle de baseball -->
+        <circle cx="24.6" cy="23.3" r="2.5" fill="#ffffff" stroke="currentColor" stroke-width="1.1"></circle>
+        <path d="M23.4,21.5 Q24.3,23.3 23.4,25.1 M25.8,21.5 Q24.9,23.3 25.8,25.1" stroke="#C8443A" stroke-width="0.7" />
+      </g>
+    </g>
+    <line class="ground" x1="2" y1="48.5" x2="42" y2="48.5" stroke="#9aa3b2" stroke-width="1.4" stroke-dasharray="7 5" stroke-linecap="round"></line>
+  </svg>
+  <div>
+    <span class="hl-name">Hugo Leligny</span>
+    <span class="hl-role"> · Sport Scientist &amp; Performance Analyst</span><br>
+    <span class="hl-role">Measure → Analyze → Decide → Train → Monitor → Adapt ↻</span><br>
+    <a href="mailto:hugoleligny14@gmail.com">hugoleligny14@gmail.com</a> ·
+    <a href="https://github.com/hugollel/blue-jays-hitting">GitHub</a>
+  </div>
+</div>
+
+<script>
+/* Cycle de 6 s : le coureur accélère (foulée plus ample et plus rapide,
+   buste plus penché), puis freine jusqu'à un petit footing, et recommence. */
+(function () {
+  var svg = document.querySelector('.hl-runner');
+  if (!svg) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+  var legF = svg.querySelector('.leg.front'), legB = svg.querySelector('.leg.back'),
+      armF = svg.querySelector('.arm.front'), armB = svg.querySelector('.arm.back'),
+      body = svg.querySelector('.body'),      ground = svg.querySelector('.ground');
+
+  var CYCLE = 6, phase = 0, offset = 0, t0 = null, last = null;
+
+  function frame(now) {
+    if (t0 === null) { t0 = now; last = now; }
+    var dt = Math.min(0.05, (now - last) / 1000); last = now;
+    var t = (now - t0) / 1000;
+
+    var s = 0.5 - 0.5 * Math.cos(2 * Math.PI * t / CYCLE);   // 0 = footing, 1 = sprint
+    var speed = 0.35 + 1.65 * s * s;                           // fréquence de foulée
+    phase += dt * 2 * Math.PI * 1.4 * speed;
+
+    var amp = 16 + 22 * s;                                     // amplitude (degrés)
+    var a = Math.sin(phase) * amp;
+    legF.setAttribute('transform', 'rotate(' + a + ' 18 27)');
+    legB.setAttribute('transform', 'rotate(' + (-a) + ' 18 27)');
+    armF.setAttribute('transform', 'rotate(' + (-0.9 * a) + ' 21.6 15.5)');
+    armB.setAttribute('transform', 'rotate(' + (0.9 * a) + ' 21.6 15.5)');
+
+    var lean = 1 + 11 * s;                                     // inclinaison du buste
+    var bounce = -Math.abs(Math.sin(phase)) * (0.5 + 1.5 * s);
+    body.setAttribute('transform',
+      'translate(0 ' + bounce + ') rotate(' + lean + ' 18 44)');
+
+    offset = (offset + dt * 30 * speed) % 12;                  // le sol défile
+    ground.setAttribute('stroke-dashoffset', offset);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
 <script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
     const icon = "";
